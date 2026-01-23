@@ -10,7 +10,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 # ================== CONFIG ==================
 import os
 
-TOKEN = ("8588119089:AAF0FTorkZSsFLjzCEfgcy-cHpSWa3K03zc")
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6214795350
 
 bot = Bot(token=TOKEN)
@@ -913,4 +913,5 @@ async def export_clients_excel(message: types.Message):
 
 # ================== RUN ==================
 if __name__ == "__main__":
+
     executor.start_polling(dp, skip_updates=True)
