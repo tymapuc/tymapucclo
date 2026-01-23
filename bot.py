@@ -419,12 +419,11 @@ async def history(message: types.Message):
 
 @dp.message_handler(lambda m: m.text in [
     "📞 Связаться с нами",
-    "📞 Biz bilan bog‘lanish"
+    "📞 Bog‘lanish"
 ])
 async def contacts(message: types.Message):
     user = get_user(message.from_user.id)
 
-    # если вдруг пользователь не зарегистрирован
     if not user:
         await message.answer(
             "Пожалуйста, сначала зарегистрируйтесь 🙏\n\n"
@@ -438,46 +437,11 @@ async def contacts(message: types.Message):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
-            "📩 Telegram", 
+            "📩 Telegram",
             url="https://t.me/tymapucclo"
         ),
         types.InlineKeyboardButton(
-            "💌 Instagram", 
-            url="https://instagram.com/tymapuc.clo"
-        )
-    )
-
-    await message.answer(
-        "Выберите удобный способ для связи:"
-        if lang == "ru"
-        else "Biz bilan bog‘lanish uchun qulay usulni tanlang:",
-        reply_markup=kb
-    )@dp.message_handler(lambda m: m.text in [
-    "📞 Связаться с нами",
-    "📞 Biz bilan bog‘lanish"
-])
-async def contacts(message: types.Message):
-    user = get_user(message.from_user.id)
-
-    # если вдруг пользователь не зарегистрирован
-    if not user:
-        await message.answer(
-            "Пожалуйста, сначала зарегистрируйтесь 🙏\n\n"
-            "Iltimos, avval ro‘yxatdan o‘ting 🙏",
-            reply_markup=lang_kb()
-        )
-        return
-
-    lang = user[3]
-
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            "📩 Telegram", 
-            url="https://t.me/tymapucclo"
-        ),
-        types.InlineKeyboardButton(
-            "💌 Instagram", 
+            "💌 Instagram",
             url="https://instagram.com/tymapuc.clo"
         )
     )
@@ -969,4 +933,5 @@ async def export_clients_excel(message: types.Message):
 if __name__ == "__main__":
 
     executor.start_polling(dp, skip_updates=True)
+
 
