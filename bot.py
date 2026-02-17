@@ -1016,5 +1016,6 @@ async def export_clients_excel(message: types.Message):
 
 
 # ================== RUN ==================
-if name == "__main__":
+if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
