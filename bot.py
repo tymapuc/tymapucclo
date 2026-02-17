@@ -1,5 +1,6 @@
-import sqlite3
 from datetime import datetime, timedelta
+import os
+import psycopg2
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
@@ -8,21 +9,22 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 # ================== CONFIG ==================
-import os
-
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6214795350
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# ================== DATABASE ==================
-conn = sqlite3.connect("users.db", check_same_thread=False)
+# ================== DATABASE (PostgreSQL) ==================
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
+# --- таблица users ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     phone TEXT,
     name TEXT,
     lang TEXT,
@@ -30,44 +32,44 @@ CREATE TABLE IF NOT EXISTS users (
     bonus INTEGER DEFAULT 0,
     bonus_total INTEGER DEFAULT 0,
     purchases INTEGER DEFAULT 0,
-    bonus_expire TEXT,
+    bonus_expire TIMESTAMP,
     expire_notified INTEGER DEFAULT 0,
     bonus_expired INTEGER DEFAULT 0
 )
 """)
-conn.commit()
 
+# --- таблица operations ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS operations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
     type TEXT,
     purchase_sum INTEGER,
     bonus_amount INTEGER,
-    created_at TEXT
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
-conn.commit()
- 
-# --- доп. поле для уведомления о сгорании ---
-try:
-    cursor.execute(
-        "ALTER TABLE users ADD COLUMN expire_notified INTEGER DEFAULT 0"
-    )
-except:
-    pass
 
 conn.commit()
 
 # ================== HELPERS ==================
+
 def get_user(uid):
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    cursor.execute("SELECT * FROM users WHERE user_id=%s", (uid,))
     return cursor.fetchone()
 
-def fmt_date(date_str):
-    if not date_str:
+
+def fmt_date(date_val):
+    if not date_val:
         return "—"
-    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+    # PostgreSQL возвращает datetime
+    if isinstance(date_val, datetime):
+        return date_val.strftime("%d.%m.%Y")
+
+    # если вдруг строка
+    return datetime.strptime(str(date_val), "%Y-%m-%d").strftime("%d.%m.%Y")
+
 
 def calc_status(purchases):
     if purchases >= 15:
@@ -76,6 +78,7 @@ def calc_status(purchases):
         return "Своя (постоянная ухти)"
     return "Гостья (новая ухти)"
 
+
 def calc_percent(status):
     if status.startswith("Vip"):
         return 0.02
@@ -83,15 +86,20 @@ def calc_percent(status):
         return 0.015
     return 0.01
 
-def fmt_money(amount):
-    return "{:,}".format(amount).replace(",", " ")
 
-def fmt_datetime(dt_str):
-    return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
-
-# --- формат денег с пробелами ---
 def fmt_money(x: int) -> str:
     return f"{x:,}".replace(",", " ")
+
+
+def fmt_datetime(dt_val):
+    if not dt_val:
+        return "—"
+
+    if isinstance(dt_val, datetime):
+        return dt_val.strftime("%d.%m.%Y")
+
+    return datetime.strptime(str(dt_val), "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+
 
 # --- уведомление за 10 дней ---
 async def check_bonus_expire(uid):
@@ -99,13 +107,16 @@ async def check_bonus_expire(uid):
     if not u:
         return
 
-    bonus_expire = u[8]
+    bonus_expire = u[8]       # TIMESTAMP
     notified = u[9]
 
     if not bonus_expire or notified == 1:
         return
 
-    expire_date = datetime.strptime(bonus_expire, "%Y-%m-%d")
+    # PostgreSQL уже отдаёт datetime
+    expire_date = bonus_expire if isinstance(bonus_expire, datetime) \
+        else datetime.strptime(str(bonus_expire), "%Y-%m-%d")
+
     days_left = (expire_date - datetime.now()).days
 
     if days_left == 10:
@@ -123,7 +134,7 @@ async def check_bonus_expire(uid):
         await bot.send_message(uid, text_ru if u[3] == "ru" else text_uz)
 
         cursor.execute(
-            "UPDATE users SET expire_notified = 1 WHERE user_id=?",
+            "UPDATE users SET expire_notified = 1 WHERE user_id=%s",
             (uid,)
         )
         conn.commit()
@@ -134,20 +145,22 @@ async def expire_bonuses_if_needed(uid):
     if not u:
         return
 
-    bonus_expire = u[8]
+    bonus_expire = u[8]   # TIMESTAMP
     expired = u[10]
 
     if not bonus_expire or expired == 1:
         return
 
-    expire_date = datetime.strptime(bonus_expire, "%Y-%m-%d")
+    # PostgreSQL возвращает datetime
+    expire_date = bonus_expire if isinstance(bonus_expire, datetime) \
+        else datetime.strptime(str(bonus_expire), "%Y-%m-%d")
 
     if datetime.now() >= expire_date:
         cursor.execute("""
             UPDATE users
             SET bonus = 0,
                 bonus_expired = 1
-            WHERE user_id = ?
+            WHERE user_id = %s
         """, (uid,))
         conn.commit()
 
@@ -221,6 +234,8 @@ class AdminMinus(StatesGroup):
 
 class AdminFind(StatesGroup):
     phone = State()
+
+
 # ================== START ==================
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
@@ -243,6 +258,7 @@ async def start(message: types.Message):
             reply_markup=lang_kb()
         )
 
+
 # ================== LANGUAGE ==================
 @dp.message_handler(lambda m: m.text in ["🇷🇺 Русский", "🇺🇿 O‘zbekcha"])
 async def choose_lang(message: types.Message):
@@ -250,9 +266,14 @@ async def choose_lang(message: types.Message):
     uid = message.from_user.id
 
     cursor.execute("""
-        INSERT OR REPLACE INTO users (user_id, lang, status)
-        VALUES (?, ?, ?)
+        INSERT INTO users (user_id, lang, status)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            lang = EXCLUDED.lang,
+            status = EXCLUDED.status
     """, (uid, lang, "Гостья (новая ухти)"))
+
     conn.commit()
 
     await Reg.phone.set()
@@ -269,10 +290,16 @@ async def choose_lang(message: types.Message):
 @dp.message_handler(content_types=types.ContentType.CONTACT, state=Reg.phone)
 async def get_phone(message: types.Message, state: FSMContext):
     uid = message.from_user.id
-    cursor.execute("UPDATE users SET phone=? WHERE user_id=?", (message.contact.phone_number, uid))
+
+    cursor.execute(
+        "UPDATE users SET phone=%s WHERE user_id=%s",
+        (message.contact.phone_number, uid)
+    )
     conn.commit()
 
-    lang = get_user(uid)[3]
+    user = get_user(uid)
+    lang = user[3] if user else "ru"
+
     await Reg.name.set()
     await message.answer(
         "Спасибо! 🤍\nНапишите, пожалуйста, ваше имя:"
@@ -281,16 +308,23 @@ async def get_phone(message: types.Message, state: FSMContext):
         reply_markup=types.ReplyKeyboardRemove()
     )
 
+
 # ================== NAME ==================
 @dp.message_handler(state=Reg.name)
 async def get_name(message: types.Message, state: FSMContext):
     uid = message.from_user.id
-    cursor.execute("UPDATE users SET name=? WHERE user_id=?", (message.text.strip(), uid))
+    name = message.text.strip()
+
+    cursor.execute(
+        "UPDATE users SET name=%s WHERE user_id=%s",
+        (name, uid)
+    )
     conn.commit()
+
     await state.finish()
 
-    lang = get_user(uid)[3]
-    name = message.text.strip()
+    user = get_user(uid)
+    lang = user[3] if user else "ru"
 
     await message.answer(
         f"Рады видеть вас, {name} 💫\n\n"
@@ -311,24 +345,30 @@ async def get_name(message: types.Message, state: FSMContext):
 @dp.message_handler(lambda m: m.text in ["💳 Моя карта", "💳 Mening kartam"])
 async def my_card(message: types.Message):
     u = get_user(message.from_user.id)
+
+    if not u:
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь 🙏")
+        return
+
     lang = u[3]
 
     await message.answer(
         f"💳 Моя карта\n\n"
-        f"👤 Имя: {u[2]}\n"
-        f"📱 Телефон: {u[1]}\n"
+        f"👤 Имя: {u[2] or '—'}\n"
+        f"📱 Телефон: {u[1] or '—'}\n"
         f"🆔 ID: {u[0]}\n"
-        f"⭐ Статус: {u[4]}\n\n"
+        f"⭐️ Статус: {u[4]}\n\n"
         f"📌 Сообщите номер телефона при покупке"
         if lang == "ru" else
         f"💳 Mening kartam\n\n"
-        f"👤 Ism: {u[2]}\n"
-        f"📱 Telefon: {u[1]}\n"
+        f"👤 Ism: {u[2] or '—'}\n"
+        f"📱 Telefon: {u[1] or '—'}\n"
         f"🆔 ID: {u[0]}\n"
-        f"⭐ Daraja: {u[4]}\n\n"
+        f"⭐️ Daraja: {u[4]}\n\n"
         f"📌 Xarid paytida telefon raqamingizni ayting",
         reply_markup=menu(lang)
     )
+
 
 @dp.message_handler(lambda m: m.text in ["💰 Мои бонусы", "💰 Mening bonuslarim"])
 async def bonuses(message: types.Message):
@@ -338,34 +378,44 @@ async def bonuses(message: types.Message):
     await expire_bonuses_if_needed(uid)
 
     u = get_user(uid)
+
+    if not u:
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь 🙏")
+        return
+
     lang = u[3]
 
     await message.answer(
-        f"💰 Текущий бонусный баланс: {fmt_money(u[5])} сум\n"
-        f"🌟 Заработано за все время: {fmt_money(u[6])} сум\n\n"
+        f"💰 Текущий бонусный баланс: {fmt_money(u[5] or 0)} сум\n"
+        f"🌟 Заработано за все время: {fmt_money(u[6] or 0)} сум\n\n"
         f"⏳ Бонусы действуют до: {fmt_date(u[8])}"
         if lang == "ru" else
-        f"💰 Joriy bonus balans: {fmt_money(u[5])} so‘m\n"
-        f"🌟 Umumiy yig‘ilgan: {fmt_money(u[6])} so‘m\n\n"
+        f"💰 Joriy bonus balans: {fmt_money(u[5] or 0)} so‘m\n"
+        f"🌟 Umumiy yig‘ilgan: {fmt_money(u[6] or 0)} so‘m\n\n"
         f"⏳ Bonuslar amal qilish muddati: {fmt_date(u[8])}",
         reply_markup=menu(lang)
     )
 
 # ---------- формат денег с пробелами ----------
 def fmt_money(amount):
-    return "{:,}".format(amount).replace(",", " ")
+    return "{:,}".format(amount or 0).replace(",", " ")
 
 
 @dp.message_handler(lambda m: m.text in ["🛍 История покупок", "🛍 Xaridlar tarixi"])
 async def history(message: types.Message):
     uid = message.from_user.id
     u = get_user(uid)
+
+    if not u:
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь 🙏")
+        return
+
     lang = u[3]
 
     cursor.execute("""
         SELECT type, purchase_sum, bonus_amount, created_at
         FROM operations
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
         LIMIT 10
     """, (uid,))
@@ -383,7 +433,12 @@ async def history(message: types.Message):
     if lang == "ru":
         text = "🛍 История покупок:\n\n"
         for t, p, b, d in rows:
-            date = datetime.strptime(d, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+
+            if isinstance(d, datetime):
+                date = d.strftime("%d.%m.%Y")
+            else:
+                date = datetime.strptime(str(d), "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+
             if t == "add":
                 text += (
                     f"📅 {date}\n"
@@ -400,7 +455,12 @@ async def history(message: types.Message):
     else:
         text = "🛍 Xaridlar tarixi:\n\n"
         for t, p, b, d in rows:
-            date = d[:10]
+
+            if isinstance(d, datetime):
+                date = d.strftime("%Y-%m-%d")
+            else:
+                date = str(d)[:10]
+
             if t == "add":
                 text += (
                     f"📅 {date}\n"
@@ -416,6 +476,7 @@ async def history(message: types.Message):
                 )
 
     await message.answer(text, reply_markup=menu(lang))
+
 
 @dp.message_handler(lambda m: m.text in [
     "📞 Связаться с нами",
@@ -482,7 +543,7 @@ async def back_any(message: types.Message, state: FSMContext):
         return
 
     # ✅ зарегистрированный клиент
-    lang = user[3]
+    lang = user[3] if user else "ru"
 
     await message.answer(
         "Выберите пункт меню ниже ⬇️"
@@ -499,6 +560,7 @@ async def admin_start(message: types.Message):
         return
     await message.answer("🔐 Админ-панель", reply_markup=admin_menu())
 
+
 # -------- ADD BONUS --------
 @dp.message_handler(lambda m: m.text == "➕ Начислить бонусы")
 async def add_start(message: types.Message):
@@ -510,7 +572,7 @@ async def add_start(message: types.Message):
 
 @dp.message_handler(state=AdminAdd.phone)
 async def add_phone(message: types.Message, state: FSMContext):
-    cursor.execute("SELECT user_id FROM users WHERE phone=?", (message.text,))
+    cursor.execute("SELECT user_id FROM users WHERE phone=%s", (message.text,))
     user = cursor.fetchone()
 
     if not user:
@@ -550,17 +612,17 @@ async def add_amount(message: types.Message, state: FSMContext):
     начислено = int(purchase * percent)
 
     # срок действия бонусов — 365 дней
-    expire = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+    expire = (datetime.now() + timedelta(days=365))
 
     # обновляем пользователя
     cursor.execute("""
         UPDATE users SET
-            purchases = ?,
-            status = ?,
-            bonus = bonus + ?,
-            bonus_total = bonus_total + ?,
-            bonus_expire = ?
-        WHERE user_id = ?
+            purchases = %s,
+            status = %s,
+            bonus = bonus + %s,
+            bonus_total = bonus_total + %s,
+            bonus_expire = %s
+        WHERE user_id = %s
     """, (
         new_purchases,
         new_status,
@@ -580,13 +642,12 @@ async def add_amount(message: types.Message, state: FSMContext):
             bonus_amount,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, NOW())
     """, (
         uid,
         "add",
         purchase,
-        начислено,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        начислено
     ))
     conn.commit()
 
@@ -649,6 +710,7 @@ async def add_amount(message: types.Message, state: FSMContext):
     await state.finish()
     await message.answer("✅ Бонусы начислены", reply_markup=admin_menu())
 
+
 # -------- MINUS BONUS --------
 @dp.message_handler(lambda m: m.text == "➖ Списать бонусы")
 async def minus_start(message: types.Message):
@@ -657,17 +719,24 @@ async def minus_start(message: types.Message):
     await AdminMinus.phone.set()
     await message.answer("Введите номер телефона клиента:")
 
+
 @dp.message_handler(state=AdminMinus.phone)
 async def minus_phone(message: types.Message, state: FSMContext):
-    cursor.execute("SELECT user_id, bonus, lang FROM users WHERE phone=?", (message.text,))
+    cursor.execute(
+        "SELECT user_id, bonus, lang FROM users WHERE phone=%s",
+        (message.text,)
+    )
     user = cursor.fetchone()
+
     if not user:
         await state.finish()
         await message.answer("❌ Клиент не найден", reply_markup=admin_menu())
         return
+
     await state.update_data(uid=user[0], bonus=user[1], lang=user[2])
     await AdminMinus.amount.set()
     await message.answer("Введите сумму списания:")
+
 
 @dp.message_handler(state=AdminMinus.amount)
 async def minus_amount(message: types.Message, state: FSMContext):
@@ -685,9 +754,27 @@ async def minus_amount(message: types.Message, state: FSMContext):
 
     # списываем бонусы
     cursor.execute(
-        "UPDATE users SET bonus = bonus - ? WHERE user_id = ?",
+        "UPDATE users SET bonus = bonus - %s WHERE user_id = %s",
         (amount, data["uid"])
     )
+    conn.commit()
+
+    # записываем операцию
+    cursor.execute("""
+        INSERT INTO operations (
+            user_id,
+            type,
+            purchase_sum,
+            bonus_amount,
+            created_at
+        )
+        VALUES (%s, %s, %s, %s, NOW())
+    """, (
+        data["uid"],
+        "minus",
+        0,
+        amount
+    ))
     conn.commit()
 
     # --- запись операции списания ---
@@ -699,24 +786,23 @@ async def minus_amount(message: types.Message, state: FSMContext):
             bonus_amount,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, NOW())
     """, (
         data["uid"],
         "minus",
         0,
-        amount,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        amount
     ))
     conn.commit()
 
     # сообщение клиенту
     text_ru = (
-        f"С ваших бонусов списано: {amount} сум\n\n"
+        f"С ваших бонусов списано: {fmt_money(amount)} сум\n\n"
         "💰 Текущий бонусный баланс обновлён"
     )
 
     text_uz = (
-        f"Bonuslaringizdan {amount} so‘m yechildi\n\n"
+        f"Bonuslaringizdan {fmt_money(amount)} so‘m yechildi\n\n"
         "💰 Joriy bonus balans yangilandi"
     )
 
@@ -735,7 +821,7 @@ async def stats(message: types.Message):
         return
 
     cursor.execute("SELECT COUNT(*) FROM users")
-    users_count = cursor.fetchone()[0]
+    users_count = cursor.fetchone()[0] or 0
 
     cursor.execute("SELECT SUM(purchases) FROM users")
     total_purchases = cursor.fetchone()[0] or 0
@@ -764,6 +850,7 @@ async def stats(message: types.Message):
 
     await message.answer(text, reply_markup=admin_menu())
 
+
 @dp.message_handler(lambda m: m.text == "🏆 Топ клиент")
 async def top_client(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -786,7 +873,7 @@ async def top_client(message: types.Message):
         f"👤 Имя: {u[0]}\n"
         f"📱 Телефон: {u[1]}\n"
         f"🆔 ID: {u[2]}\n"
-        f"⭐ Статус: {u[3]}\n\n"
+        f"⭐️ Статус: {u[3]}\n\n"
         f"Покупок: {u[4]}\n"
         f"Бонусов: {fmt_money(u[5])} сум"
     )
@@ -812,7 +899,7 @@ async def admin_find_result(message: types.Message, state: FSMContext):
     cursor.execute("""
         SELECT user_id, name, phone, status, purchases, bonus, bonus_total
         FROM users
-        WHERE phone = ?
+        WHERE phone = %s
     """, (phone,))
     u = cursor.fetchone()
 
@@ -829,7 +916,7 @@ async def admin_find_result(message: types.Message, state: FSMContext):
         f"👤 Имя: {u[1]}\n"
         f"📱 Телефон: {u[2]}\n"
         f"🆔 ID: {u[0]}\n"
-        f"⭐ Статус: {u[3]}\n\n"
+        f"⭐️ Статус: {u[3]}\n\n"
         f"🛍 Покупок: {u[4]}\n"
         f"💰 Бонусы: {fmt_money(u[5])} сум\n"
         f"🌟 Всего начислено: {fmt_money(u[6])} сум"
@@ -837,6 +924,7 @@ async def admin_find_result(message: types.Message, state: FSMContext):
 
     await state.finish()
     await message.answer(text, reply_markup=admin_menu())
+
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
@@ -862,7 +950,7 @@ async def export_clients_excel(message: types.Message):
             u.bonus,
             u.status
         FROM users u
-        ORDER BY u.rowid ASC
+        ORDER BY u.user_id ASC
     """)
     users = cursor.fetchall()
 
@@ -886,12 +974,10 @@ async def export_clients_excel(message: types.Message):
     ]
     ws.append(headers)
 
-    # оформление заголовков
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
 
-    # данные
     for (
         name,
         phone,
@@ -905,7 +991,7 @@ async def export_clients_excel(message: types.Message):
         ws.append([
             name or "",
             phone or "",
-            str(uid),          # ID как текст — НЕ обрезается
+            str(uid),
             purchases or 0,
             bonus_total or 0,
             bonus_minus or 0,
@@ -913,7 +999,6 @@ async def export_clients_excel(message: types.Message):
             status or ""
         ])
 
-    # автоширина колонок
     for column_cells in ws.columns:
         max_length = max(
             len(str(cell.value)) if cell.value else 0
@@ -929,9 +1014,7 @@ async def export_clients_excel(message: types.Message):
         caption="📊 Полный список клиентов"
     )
 
+
 # ================== RUN ==================
-if __name__ == "__main__":
-
+if name == "__main__":
     executor.start_polling(dp, skip_updates=True)
-
-
