@@ -757,9 +757,8 @@ async def minus_amount(message: types.Message, state: FSMContext):
         "UPDATE users SET bonus = bonus - %s WHERE user_id = %s",
         (amount, data["uid"])
     )
-    conn.commit()
 
-    # записываем операцию
+    # записываем операцию (ОДИН РАЗ)
     cursor.execute("""
         INSERT INTO operations (
             user_id,
@@ -775,24 +774,7 @@ async def minus_amount(message: types.Message, state: FSMContext):
         0,
         amount
     ))
-    conn.commit()
 
-    # --- запись операции списания ---
-    cursor.execute("""
-        INSERT INTO operations (
-            user_id,
-            type,
-            purchase_sum,
-            bonus_amount,
-            created_at
-        )
-        VALUES (%s, %s, %s, %s, NOW())
-    """, (
-        data["uid"],
-        "minus",
-        0,
-        amount
-    ))
     conn.commit()
 
     # сообщение клиенту
@@ -1018,4 +1000,5 @@ async def export_clients_excel(message: types.Message):
 # ================== RUN ==================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
 
