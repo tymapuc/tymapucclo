@@ -554,6 +554,11 @@ async def back_any(message: types.Message, state: FSMContext):
 
 
 # ================== ADMIN ==================
+@dp.message_handler(commands=["cancel"], state="*")
+async def cancel_state(message: types.Message, state: FSMContext):
+    await state.finish()
+    await message.answer("Состояние сброшено ✅", reply_markup=admin_menu())
+
 @dp.message_handler(commands=["admin"])
 async def admin_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -1000,5 +1005,6 @@ async def export_clients_excel(message: types.Message):
 # ================== RUN ==================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
 
 
