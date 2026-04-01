@@ -55,8 +55,16 @@ conn.commit()
 # ================== HELPERS ==================
 
 def get_user(uid):
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
     cursor.execute("SELECT * FROM users WHERE user_id=%s", (uid,))
-    return cursor.fetchone()
+    user = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return user
 
 
 def fmt_date(date_val):
